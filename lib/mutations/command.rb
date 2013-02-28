@@ -84,19 +84,10 @@ module Mutations
 
     # Instance methods
     def initialize(*args)
-      if args.length == 0
-        @original_hash = {}
-      else
-        @original_hash = args.shift
-        raise ArgumentError.new("All arguments must be hashes") unless @original_hash.is_a?(Hash)
-        @original_hash = @original_hash.with_indifferent_access
+      @original_hash = args.each_with_object({}.with_indifferent_access) do |arg, h|
+        raise ArgumentError.new("All arguments must be hashes") unless arg.is_a?(Hash)
+        h.merge!(arg)
       end
-
-      args.each do |a|
-        raise ArgumentError.new("All arguments must be hashes") unless a.is_a?(Hash)
-        @original_hash.merge!(a)
-      end
-
       @filtered_input, @errors = self.input_filters.filter(@original_hash)
     end
 
@@ -104,26 +95,21 @@ module Mutations
       self.class.input_filters
     end
 
+    def has_errors?
+      not(@errors.nil?)
+    end
+
     def execute!
-      return Outcome.new(false, nil, @errors) if @errors
+      return validation_outcome if has_errors?
 
       # IDEA/TODO: run validate block
 
-      r = execute
-      if @errors # Execute can add errors
-        return Outcome.new(false, nil, @errors)
-      else
-        return Outcome.new(true, r, nil)
-      end
+      validation_outcome(execute)
     end
 
     # Runs input thru the filter and sets @filtered_input and @errors
-    def validation_outcome
-      if @errors
-        Outcome.new(false, nil, @errors)
-      else
-        Outcome.new(true, nil,  nil)
-      end
+    def validation_outcome(r = nil)
+      Outcome.new(!has_errors?, has_errors? ? nil : r, @errors)
     end
 
     # add_error("name", :too_short)
@@ -133,19 +119,13 @@ module Mutations
     def add_error(key, kind, message = nil)
       raise ArgumentError.new("Invalid kind") unless kind.is_a?(Symbol)
 
-      @errors ||= ErrorHash.new
-      cur_errors = @errors
-      parts = key.to_s.split(".")
-      while part = parts.shift
-        part = part.to_sym
-        if parts.length > 0
-          cur_errors[part] = ErrorHash.new unless cur_errors[part].is_a?(ErrorHash)
-          cur_errors = cur_errors[part]
-        else
-          cur_errors[part] = ErrorAtom.new(key, kind, message: message)
-        end
+      (@errors ||= ErrorHash.new).tap do |errs|
+        *path, last = key.to_s.split(".")
+        inner = path.inject(errs){|cut_errors,part|
+          cur_errors[part.to_sym] ||= ErrorHash.new
+        }
+        inner[last] = ErrorAtom.new(key, kind, message: message)
       end
-      @errors
     end
 
     def merge_errors(hash)
